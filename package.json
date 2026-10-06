@@ -1,0 +1,13 @@
+{
+  "name": "xman-strict-group-bot",
+  "version": "1.0.0",
+  "description": "Strict WhatsApp group moderation bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.18",
+    "pino": "^9.3.2"
+  }
+}
