@@ -2,36 +2,42 @@ const {
   default: makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
-  fetchLatestBaileysVersion
+  fetchLatestBaileysVersion,
+  jidNormalizedUser
 } = require("@whiskeysockets/baileys");
 
 const pino = require("pino");
 
-// ===============================
+// ==========================================
 // XMAN STRICT GROUP BOT
-// ===============================
+// ==========================================
 
-const warnings = new Map();
+const PREFIX = ".";
 
 const MAX_WARNINGS = 3;
 
-const blockedWords = [
-  "spamword1",
-  "spamword2"
-];
+// Temporary in-memory settings.
+// We will add a database later.
+const groupSettings = new Map();
+const warnings = new Map();
 
-const blockedLinks = [
-  "http://",
-  "https://",
-  "www.",
-  "t.me/",
-  "chat.whatsapp.com/",
-  "discord.gg/"
-];
+// ==========================================
+// DEFAULT GROUP SETTINGS
+// ==========================================
 
-// ===============================
-// GET MESSAGE TEXT
-// ===============================
+function getSettings(jid) {
+  if (!groupSettings.has(jid)) {
+    groupSettings.set(jid, {
+      antilink: true
+    });
+  }
+
+  return groupSettings.get(jid);
+}
+
+// ==========================================
+// MESSAGE TEXT
+// ==========================================
 
 function getText(message) {
   return (
@@ -40,20 +46,61 @@ function getText(message) {
     message?.imageMessage?.caption ||
     message?.videoMessage?.caption ||
     ""
-  );
+  ).trim();
 }
 
-// ===============================
-// GET USER ID
-// ===============================
+// ==========================================
+// GET MENTIONED USER
+// ==========================================
 
-function getUserId(jid) {
+function getTarget(msg, text) {
+  const mentioned =
+    msg.message?.extendedTextMessage?.contextInfo?.mentionedJid ||
+    msg.message?.imageMessage?.contextInfo?.mentionedJid ||
+    msg.message?.videoMessage?.contextInfo?.mentionedJid ||
+    [];
+
+  if (mentioned.length > 0) {
+    return jidNormalizedUser(mentioned[0]);
+  }
+
+  // Support replying to a user's message
+  const quotedParticipant =
+    msg.message?.extendedTextMessage?.contextInfo?.participant;
+
+  if (quotedParticipant) {
+    return jidNormalizedUser(quotedParticipant);
+  }
+
+  return null;
+}
+
+// ==========================================
+// GET USER NUMBER
+// ==========================================
+
+function displayUser(jid) {
   return jid?.split("@")[0] || jid;
 }
 
-// ===============================
+// ==========================================
+// CHECK ADMIN
+// ==========================================
+
+function isAdmin(metadata, jid) {
+  const user = metadata.participants.find(
+    p => jidNormalizedUser(p.id) === jidNormalizedUser(jid)
+  );
+
+  return (
+    user?.admin === "admin" ||
+    user?.admin === "superadmin"
+  );
+}
+
+// ==========================================
 // START BOT
-// ===============================
+// ==========================================
 
 async function startBot() {
   const { state, saveCreds } =
@@ -70,284 +117,569 @@ async function startBot() {
 
   sock.ev.on("creds.update", saveCreds);
 
-  // ===============================
+  // ========================================
   // CONNECTION
-  // ===============================
+  // ========================================
 
-  sock.ev.on("connection.update", ({ connection, lastDisconnect }) => {
-    if (connection === "open") {
-      console.log("");
-      console.log("================================");
-      console.log("  XMAN STRICT GROUP BOT ONLINE");
-      console.log("================================");
-      console.log("");
-    }
+  sock.ev.on(
+    "connection.update",
+    ({ connection, lastDisconnect }) => {
 
-    if (connection === "close") {
-      const shouldReconnect =
-        lastDisconnect?.error?.output?.statusCode !==
-        DisconnectReason.loggedOut;
+      if (connection === "open") {
+        console.log("");
+        console.log("====================================");
+        console.log("     XMAN STRICT GROUP BOT");
+        console.log("           ONLINE");
+        console.log("====================================");
+        console.log("");
+      }
 
-      if (shouldReconnect) {
-        console.log("Connection lost. Reconnecting...");
-        startBot();
-      } else {
-        console.log("Bot logged out.");
+      if (connection === "close") {
+
+        const shouldReconnect =
+          lastDisconnect?.error?.output?.statusCode !==
+          DisconnectReason.loggedOut;
+
+        if (shouldReconnect) {
+          console.log("Connection closed.");
+          console.log("Reconnecting...");
+          startBot();
+        } else {
+          console.log("WhatsApp session logged out.");
+        }
       }
     }
-  });
+  );
 
-  // ===============================
+  // ========================================
   // MESSAGE HANDLER
-  // ===============================
+  // ========================================
 
-  sock.ev.on("messages.upsert", async ({ messages }) => {
-    try {
-      const msg = messages[0];
+  sock.ev.on(
+    "messages.upsert",
+    async ({ messages }) => {
 
-      if (!msg?.message) return;
-      if (msg.key.fromMe) return;
+      try {
 
-      const jid = msg.key.remoteJid;
-      const sender = msg.key.participant || jid;
+        const msg = messages[0];
 
-      const text = getText(msg.message).trim();
+        if (!msg?.message) return;
 
-      if (!text) return;
+        if (msg.key.fromMe) return;
 
-      console.log(`[MESSAGE] ${sender}: ${text}`);
+        const jid = msg.key.remoteJid;
 
-      // =============================
-      // PRIVATE CHAT
-      // =============================
+        if (!jid) return;
 
-      if (!jid.endsWith("@g.us")) {
-        if (text.toLowerCase() === ".ping") {
-          await sock.sendMessage(jid, {
-            text: "🏓 XMAN STRICT BOT: ONLINE"
-          });
-        }
+        const sender =
+          msg.key.participant || jid;
 
-        return;
-      }
+        const text = getText(msg.message);
 
-      // =============================
-      // GROUP INFORMATION
-      // =============================
+        if (!text) return;
 
-      const metadata = await sock.groupMetadata(jid);
+        console.log(
+          `[MESSAGE] ${sender}: ${text}`
+        );
 
-      const participant = metadata.participants.find(
-        p => p.id === sender
-      );
+        // ==================================
+        // PRIVATE CHAT
+        // ==================================
 
-      const senderIsAdmin =
-        participant?.admin === "admin" ||
-        participant?.admin === "superadmin";
+        if (!jid.endsWith("@g.us")) {
 
-      const botJid = sock.user.id.split(":")[0] + "@s.whatsapp.net";
+          if (
+            text.toLowerCase() ===
+            `${PREFIX}ping`
+          ) {
+            await sock.sendMessage(jid, {
+              text:
+                "🏓 XMAN STRICT BOT\n\n" +
+                "STATUS: ONLINE ✅"
+            });
+          }
 
-      const botParticipant = metadata.participants.find(
-        p => p.id === botJid
-      );
-
-      const botIsAdmin =
-        botParticipant?.admin === "admin" ||
-        botParticipant?.admin === "superadmin";
-
-      // =============================
-      // ADMIN COMMANDS
-      // =============================
-
-      const command = text.toLowerCase();
-
-      if (command === ".ping") {
-        await sock.sendMessage(jid, {
-          text: "🏓 XMAN STRICT BOT: ONLINE"
-        });
-        return;
-      }
-
-      if (command === ".rules") {
-        await sock.sendMessage(jid, {
-          text:
-            "🛡️ *XMAN STRICT GROUP RULES*\n\n" +
-            "1️⃣ No spam\n" +
-            "2️⃣ No unauthorized links\n" +
-            "3️⃣ No advertising\n" +
-            "4️⃣ No abusive language\n" +
-            "5️⃣ Respect everyone\n" +
-            "6️⃣ No flooding the group\n\n" +
-            `⚠️ ${MAX_WARNINGS} warnings = removal`
-        });
-        return;
-      }
-
-      // =============================
-      // ADMIN-ONLY COMMANDS
-      // =============================
-
-      if (command === ".lock") {
-        if (!senderIsAdmin) {
-          await sock.sendMessage(jid, {
-            text: "❌ Only group admins can use this command."
-          });
           return;
         }
 
-        if (!botIsAdmin) {
+        // ==================================
+        // GROUP INFORMATION
+        // ==================================
+
+        const metadata =
+          await sock.groupMetadata(jid);
+
+        const senderAdmin =
+          isAdmin(metadata, sender);
+
+        const botJid =
+          jidNormalizedUser(sock.user.id);
+
+        const botAdmin =
+          isAdmin(metadata, botJid);
+
+        const settings =
+          getSettings(jid);
+
+        const commandText =
+          text.startsWith(PREFIX)
+            ? text.slice(PREFIX.length).trim()
+            : "";
+
+        const args =
+          commandText
+            .split(/\s+/)
+            .filter(Boolean);
+
+        const command =
+          (args.shift() || "").toLowerCase();
+
+        // ==================================
+        // PING
+        // ==================================
+
+        if (command === "ping") {
+
           await sock.sendMessage(jid, {
-            text: "⚠️ Make me a group admin first."
+            text:
+              "🏓 *XMAN STRICT BOT*\n\n" +
+              "STATUS: ONLINE ✅"
           });
+
           return;
         }
 
-        await sock.groupSettingUpdate(jid, "announcement");
+        // ==================================
+        // RULES
+        // ==================================
 
-        await sock.sendMessage(jid, {
-          text: "🔒 GROUP LOCKED\n\nOnly admins can send messages."
-        });
+        if (command === "rules") {
 
-        return;
-      }
-
-      if (command === ".unlock") {
-        if (!senderIsAdmin) {
           await sock.sendMessage(jid, {
-            text: "❌ Only group admins can use this command."
+            text:
+              "🛡️ *XMAN STRICT GROUP RULES*\n\n" +
+              "1️⃣ No spam\n" +
+              "2️⃣ No unauthorized links\n" +
+              "3️⃣ No advertising\n" +
+              "4️⃣ No flooding\n" +
+              "5️⃣ No abusive content\n" +
+              "6️⃣ Respect admins and members\n\n" +
+              "⚠️ Breaking the rules may result in warnings or removal.\n\n" +
+              `Maximum warnings: ${MAX_WARNINGS}`
           });
+
           return;
         }
 
-        if (!botIsAdmin) {
+        // ==================================
+        // SETTINGS
+        // ==================================
+
+        if (command === "settings") {
+
           await sock.sendMessage(jid, {
-            text: "⚠️ Make me a group admin first."
+            text:
+              "⚙️ *XMAN GROUP SETTINGS*\n\n" +
+              `🔗 Anti-link: ${
+                settings.antilink
+                  ? "ON ✅"
+                  : "OFF ❌"
+              }\n\n` +
+              "Use:\n" +
+              ".antlink on\n" +
+              ".antlink off"
           });
+
           return;
         }
 
-        await sock.groupSettingUpdate(jid, "not_announcement");
+        // ==================================
+        // ADMIN COMMAND PROTECTION
+        // ==================================
 
-        await sock.sendMessage(jid, {
-          text: "🔓 GROUP UNLOCKED"
-        });
+        const adminCommands = [
+          "warn",
+          "kick",
+          "del",
+          "antlink",
+          "lock",
+          "unlock"
+        ];
 
-        return;
-      }
+        if (
+          adminCommands.includes(command) &&
+          !senderAdmin
+        ) {
 
-      // =============================
-      // MODERATION
-      // =============================
+          await sock.sendMessage(jid, {
+            text:
+              "🚫 *ACCESS DENIED*\n\n" +
+              "Only group admins can use this command."
+          });
 
-      // Never moderate admins
-      if (senderIsAdmin) return;
+          return;
+        }
 
-      // =============================
-      // LINK PROTECTION
-      // =============================
+        // ==================================
+        // WARN
+        // ==================================
 
-      const lowerText = text.toLowerCase();
+        if (command === "warn") {
 
-      const hasBlockedLink = blockedLinks.some(link =>
-        lowerText.includes(link)
-      );
+          const target =
+            getTarget(msg, text);
 
-      if (hasBlockedLink) {
-        if (botIsAdmin) {
+          if (!target) {
+            await sock.sendMessage(jid, {
+              text:
+                "⚠️ Mention or reply to the member.\n\n" +
+                "Example:\n" +
+                ".warn @user"
+            });
+            return;
+          }
+
+          if (isAdmin(metadata, target)) {
+            await sock.sendMessage(jid, {
+              text:
+                "🛡️ I cannot warn a group admin."
+            });
+            return;
+          }
+
+          await addWarning(
+            sock,
+            jid,
+            target,
+            "Manual admin warning",
+            botAdmin
+          );
+
+          return;
+        }
+
+        // ==================================
+        // KICK
+        // ==================================
+
+        if (command === "kick") {
+
+          const target =
+            getTarget(msg, text);
+
+          if (!target) {
+            await sock.sendMessage(jid, {
+              text:
+                "⚠️ Mention or reply to a member.\n\n" +
+                "Example:\n" +
+                ".kick @user"
+            });
+            return;
+          }
+
+          if (isAdmin(metadata, target)) {
+            await sock.sendMessage(jid, {
+              text:
+                "🛡️ I cannot remove a group admin."
+            });
+            return;
+          }
+
+          if (!botAdmin) {
+            await sock.sendMessage(jid, {
+              text:
+                "⚠️ I need to be a group admin before I can remove members."
+            });
+            return;
+          }
+
+          await sock.groupParticipantsUpdate(
+            jid,
+            [target],
+            "remove"
+          );
+
+          await sock.sendMessage(jid, {
+            text:
+              `🔨 @${displayUser(target)} was removed.`,
+            mentions: [target]
+          });
+
+          return;
+        }
+
+        // ==================================
+        // DELETE MESSAGE
+        // ==================================
+
+        if (command === "del") {
+
+          if (!botAdmin) {
+            await sock.sendMessage(jid, {
+              text:
+                "⚠️ I need to be a group admin to delete messages."
+            });
+            return;
+          }
+
           await sock.sendMessage(jid, {
             delete: msg.key
           });
+
+          return;
         }
 
-        await addWarning(sock, jid, sender, "Unauthorized link");
+        // ==================================
+        // ANTI-LINK ON/OFF
+        // ==================================
 
-        return;
-      }
+        if (command === "antlink") {
 
-      // =============================
-      // BAD WORD FILTER
-      // =============================
+          const value =
+            (args[0] || "").toLowerCase();
 
-      const hasBlockedWord = blockedWords.some(word =>
-        lowerText.includes(word.toLowerCase())
-      );
+          if (
+            value !== "on" &&
+            value !== "off"
+          ) {
+            await sock.sendMessage(jid, {
+              text:
+                "Usage:\n" +
+                ".antlink on\n" +
+                ".antlink off"
+            });
 
-      if (hasBlockedWord) {
-        if (botIsAdmin) {
+            return;
+          }
+
+          settings.antilink =
+            value === "on";
+
           await sock.sendMessage(jid, {
-            delete: msg.key
+            text:
+              `🔗 Anti-link is now ${
+                settings.antilink
+                  ? "ON ✅"
+                  : "OFF ❌"
+              }`
           });
+
+          return;
         }
 
-        await addWarning(sock, jid, sender, "Banned word");
+        // ==================================
+        // LOCK GROUP
+        // ==================================
 
-        return;
+        if (command === "lock") {
+
+          if (!botAdmin) {
+            await sock.sendMessage(jid, {
+              text:
+                "⚠️ Make me a group admin first."
+            });
+            return;
+          }
+
+          await sock.groupSettingUpdate(
+            jid,
+            "announcement"
+          );
+
+          await sock.sendMessage(jid, {
+            text:
+              "🔒 *GROUP LOCKED*\n\n" +
+              "Only admins can send messages."
+          });
+
+          return;
+        }
+
+        // ==================================
+        // UNLOCK GROUP
+        // ==================================
+
+        if (command === "unlock") {
+
+          if (!botAdmin) {
+            await sock.sendMessage(jid, {
+              text:
+                "⚠️ Make me a group admin first."
+            });
+            return;
+          }
+
+          await sock.groupSettingUpdate(
+            jid,
+            "not_announcement"
+          );
+
+          await sock.sendMessage(jid, {
+            text:
+              "🔓 *GROUP UNLOCKED*\n\n" +
+              "Members can send messages again."
+          });
+
+          return;
+        }
+
+        // ==================================
+        // NORMAL MEMBER MODERATION
+        // ==================================
+
+        if (senderAdmin) return;
+
+        // ==================================
+        // ANTI-LINK
+        // ==================================
+
+        if (settings.antilink) {
+
+          const links = [
+            "http://",
+            "https://",
+            "www.",
+            "t.me/",
+            "chat.whatsapp.com/",
+            "discord.gg/"
+          ];
+
+          const lowerText =
+            text.toLowerCase();
+
+          const hasLink =
+            links.some(link =>
+              lowerText.includes(link)
+            );
+
+          if (hasLink) {
+
+            if (botAdmin) {
+
+              await sock.sendMessage(jid, {
+                delete: msg.key
+              });
+            }
+
+            await addWarning(
+              sock,
+              jid,
+              sender,
+              "Unauthorized link",
+              botAdmin
+            );
+
+            return;
+          }
+        }
+
+      } catch (error) {
+
+        console.error(
+          "Message handler error:",
+          error
+        );
       }
-
-    } catch (error) {
-      console.error("Message handler error:", error);
     }
-  });
+  );
 }
 
-// ===============================
+// ==========================================
 // WARNING SYSTEM
-// ===============================
+// ==========================================
 
-async function addWarning(sock, jid, user, reason) {
-  const key = `${jid}:${user}`;
+async function addWarning(
+  sock,
+  jid,
+  user,
+  reason,
+  botAdmin
+) {
 
-  const currentWarnings = warnings.get(key) || 0;
-  const newWarnings = currentWarnings + 1;
+  const key =
+    `${jid}:${user}`;
 
-  warnings.set(key, newWarnings);
+  const current =
+    warnings.get(key) || 0;
 
-  const number = getUserId(user);
+  const total =
+    current + 1;
 
-  if (newWarnings >= MAX_WARNINGS) {
-    try {
-      await sock.groupParticipantsUpdate(
-        jid,
-        [user],
-        "remove"
-      );
+  warnings.set(key, total);
 
-      warnings.delete(key);
+  const number =
+    displayUser(user);
 
-      await sock.sendMessage(jid, {
-        text:
-          `🔨 @${number} has been removed.\n\n` +
-          `Reason: ${reason}\n` +
-          `Warnings reached: ${MAX_WARNINGS}`,
-        mentions: [user]
-      });
+  // ========================================
+  // AUTO KICK
+  // ========================================
 
-    } catch (error) {
-      await sock.sendMessage(jid, {
-        text:
-          `⚠️ @${number} reached ${MAX_WARNINGS} warnings, ` +
-          `but I couldn't remove them.\n\n` +
-          `Make sure the bot is an admin.`,
-        mentions: [user]
-      });
+  if (total >= MAX_WARNINGS) {
+
+    if (botAdmin) {
+
+      try {
+
+        await sock.groupParticipantsUpdate(
+          jid,
+          [user],
+          "remove"
+        );
+
+        warnings.delete(key);
+
+        await sock.sendMessage(jid, {
+          text:
+            `🔨 @${number} has been removed.\n\n` +
+            `Reason: ${reason}\n` +
+            `Warnings: ${MAX_WARNINGS}/${MAX_WARNINGS}`,
+          mentions: [user]
+        });
+
+        return;
+
+      } catch (error) {
+
+        console.error(
+          "Kick error:",
+          error
+        );
+      }
     }
+
+    await sock.sendMessage(jid, {
+      text:
+        `🚨 @${number} reached ${MAX_WARNINGS}/${MAX_WARNINGS} warnings.\n\n` +
+        `Reason: ${reason}\n\n` +
+        `⚠️ I could not remove the member. Make sure I am a group admin.`,
+      mentions: [user]
+    });
 
     return;
   }
 
+  // ========================================
+  // NORMAL WARNING
+  // ========================================
+
   await sock.sendMessage(jid, {
     text:
-      `⚠️ WARNING ${newWarnings}/${MAX_WARNINGS}\n\n` +
-      `@${number}\n` +
-      `Reason: ${reason}`,
+      `⚠️ *WARNING ${total}/${MAX_WARNINGS}*\n\n` +
+      `👤 @${number}\n` +
+      `📌 Reason: ${reason}`,
     mentions: [user]
   });
 }
 
-// ===============================
+// ==========================================
 // START
-// ===============================
+// ==========================================
 
 startBot().catch(error => {
-  console.error("Fatal error:", error);
+
+  console.error(
+    "Fatal bot error:",
+    error
+  );
+
 });
