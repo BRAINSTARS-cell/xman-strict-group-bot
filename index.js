@@ -14,80 +14,149 @@ if (!PHONE_NUMBER) {
   process.exit(1);
 }
 
+let pairingRequested = false;
+
 async function startBot() {
+  console.log("🚀 Starting XMAN Strict Group Bot...");
+
   const { state, saveCreds } =
     await useMultiFileAuthState("./session");
 
   const sock = makeWASocket({
     auth: state,
     logger: P({ level: "silent" }),
-    browser: Browsers.windows("XMAN Strict Group Bot"),
-    printQRInTerminal: false
+    browser: Browsers.windows("XMAN Strict Group Bot")
   });
 
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect, qr } = update;
+    const {
+      connection,
+      lastDisconnect,
+      qr,
+      isNewLogin
+    } = update;
 
-    // Generate pairing code when WhatsApp is ready
-    if (qr && !state.creds.registered) {
+    // ================================
+    // PAIRING CODE
+    // ================================
+    if (
+      qr &&
+      !state.creds.registered &&
+      !pairingRequested
+    ) {
+      pairingRequested = true;
+
       try {
-        const code = await sock.requestPairingCode(PHONE_NUMBER);
-
         console.log("");
         console.log("================================");
         console.log("🔗 XMAN WHATSAPP PAIRING CODE");
         console.log("================================");
+
+        const code =
+          await sock.requestPairingCode(PHONE_NUMBER);
+
         console.log(`PAIRING CODE: ${code}`);
+
+        console.log("================================");
+        console.log("📱 ON YOUR PHONE");
+        console.log("================================");
+        console.log("WhatsApp");
+        console.log("→ Settings");
+        console.log("→ Linked Devices");
+        console.log("→ Link a Device");
+        console.log("→ Link with phone number instead");
+        console.log(`→ Enter: ${code}`);
         console.log("================================");
         console.log("");
-        console.log("On your phone:");
-        console.log("WhatsApp → Settings → Linked Devices");
-        console.log("→ Link a Device → Link with phone number");
-        console.log("Enter the pairing code above.");
-        console.log("");
       } catch (error) {
-        console.error("❌ Pairing code error:", error);
+        console.error(
+          "❌ Pairing code error:",
+          error?.message || error
+        );
+
+        pairingRequested = false;
       }
     }
 
+    // ================================
+    // CONNECTED
+    // ================================
     if (connection === "open") {
       console.log("");
       console.log("================================");
-      console.log("✅ XMAN BOT CONNECTED TO WHATSAPP");
+      console.log("✅ XMAN BOT CONNECTED");
       console.log("================================");
+      console.log("🤖 WhatsApp connection is active.");
       console.log("");
     }
 
+    // ================================
+    // NEW LOGIN
+    // ================================
+    if (isNewLogin) {
+      console.log("");
+      console.log("🔐 NEW WHATSAPP LOGIN DETECTED");
+      console.log("💾 Saving authentication session...");
+      console.log("");
+    }
+
+    // ================================
+    // CONNECTION CLOSED
+    // ================================
     if (connection === "close") {
       const statusCode =
         lastDisconnect?.error?.output?.statusCode;
 
-      console.log("⚠️ WhatsApp connection closed:", statusCode);
+      console.log("");
+      console.log("⚠️ WhatsApp connection closed.");
+      console.log("Status:", statusCode);
 
-      if (statusCode !== DisconnectReason.loggedOut) {
-        console.log("🔄 Reconnecting...");
-        startBot();
-      } else {
-        console.log("❌ WhatsApp session logged out.");
+      if (
+        statusCode === DisconnectReason.loggedOut
+      ) {
+        console.log(
+          "❌ WhatsApp session was logged out."
+        );
+        return;
       }
+
+      console.log("🔄 Restarting WhatsApp connection...");
+
+      pairingRequested = false;
+
+      setTimeout(() => {
+        startBot();
+      }, 3000);
     }
   });
 
-  // Basic message test
-  sock.ev.on("messages.upsert", async ({ messages }) => {
-    const message = messages[0];
+  // ================================
+  // MESSAGE TEST
+  // ================================
+  sock.ev.on(
+    "messages.upsert",
+    async ({ messages }) => {
+      const message = messages[0];
 
-    if (!message?.message) return;
-    if (message.key.fromMe) return;
+      if (!message?.message) return;
 
-    const jid = message.key.remoteJid;
+      if (message.key.fromMe) return;
 
-    console.log("📩 Message received:", jid);
-  });
+      const jid = message.key.remoteJid;
+
+      console.log("");
+      console.log("📩 MESSAGE RECEIVED");
+      console.log("From:", jid);
+      console.log("");
+    }
+  );
 }
 
 startBot().catch((error) => {
-  console.error("❌ Fatal bot error:", error);
+  console.error("");
+  console.error("❌ FATAL BOT ERROR");
+  console.error(error);
+  console.error("");
 });
